@@ -1,4 +1,4 @@
-# HIPATHIA PIPELINE – TEMPLATE FOR YOUR OWN DATA
+# HIPATHIA PIPELINE – TEMPLAT
 # ------------------------------------------------------------
 # Purpose: Run your own gene expression data through hipathia
 # Author: <your name>
