@@ -17,14 +17,14 @@
 # 👉 Adjust these to your data.
 
 # 0.1 File paths
-expr_file   <- "./expression_matrix.tsv"   # Genes x Samples; first column = gene IDs; header = sample IDs
-design_file <- "./design.tsv"              # Tab-delimited; columns: sample, group (and optional others)
+expr_file   <- "./expression_matrix.tsv"   # Genes x Samples; first column = gene IDs; header = sample IDs 
+design_file <- "./design.tsv"              # Tab-delimited; columns: sample, group (and optional others) Metadata
 output_dir  <- "./hipathia_report"         # Output folder for the HTML report
 
 # 0.2 Organism / Pathways
 species     <- "hsa"                        # "hsa" (Human), "mmu" (Mouse), "rno" (Rat)
 # Optional: load only certain KEGG IDs (saves time/memory). Otherwise: NULL
-pathways_list <- NULL                       # e.g., c("hsa03320","hsa04014")
+pathways_list <- c("hsa03320","hsa04014")                    # e.g., c("hsa03320","hsa04014") or NULL for all
 
 # 0.3 Groups (order defines direction: g1 vs g2)
 group1 <- "Tumor"                           # g1 (interpreted as "up" in comparisons)
