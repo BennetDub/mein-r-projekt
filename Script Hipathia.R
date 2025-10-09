@@ -17,8 +17,8 @@
 # 👉 Adjust these to your data.
 
 # 0.1 File paths
-expr_file   <- "./expression_matrix.tsv"   # Genes x Samples; first column = gene IDs; header = sample IDs 
-design_file <- "./design.tsv"              # Tab-delimited; columns: sample, group (and optional others) Metadata
+expr_file   <- "./rna_data_filtered_tumor_Hipathia.tsv"   # Genes x Samples; first column = gene IDs; header = sample IDs 
+design_file <- "./cell_metadata_filtered_hipathia.tsv"              # Tab-delimited; columns: sample, group (and optional others) Metadata
 output_dir  <- "./hipathia_report"         # Output folder for the HTML report
 
 # 0.2 Organism / Pathways
