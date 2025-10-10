@@ -112,7 +112,12 @@ message("
 [Normalization] …")
 norm_args <- list(x = trans_data, by_quantiles = by_quantiles, percentil = percentil_mode)
 if (!is.na(truncation_percentil)) norm_args$truncation_percentil <- truncation_percentil
-exp_data <- do.call(normalize_data, norm_args)
+exp_data <- hipathia::normalize_data(
+  trans_data,
+  by_quantiles = by_quantiles,
+  percentil = percentil_mode,
+  truncation_percentil = truncation_percentil
+)
 
 # =====================
 # 4) LOAD PATHWAYS
