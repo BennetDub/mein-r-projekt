@@ -212,7 +212,7 @@ if (use_pca) {
 
 
 # =====================
-# 11) NODE-LEVEL DE COLORS (limma) & COMPARISON PLOT
+# 11) NDE-LEVEL DE COLORS (limma) & COMPARISON PLOT
 # =====================
 message("\n[Node DE + pathway plot] …")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
