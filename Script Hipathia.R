@@ -27,7 +27,7 @@ if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 # 0.2 Organism / Pathways
 species     <- "hsa"                        # "hsa" (Human), "mmu" (Mouse), "rno" (Rat)
 # Optional: load only certain KEGG IDs (saves time/memory). Otherwise: NULL
-pathways_list <- c("hsa03320","hsa04014")                    # e.g., c("hsa03320","hsa04014") or NULL for all
+pathways_list <- NULL                    # e.g., c("hsa03320","hsa04014") or NULL for all
 
 # 0.3 Groups (order defines direction: g1 vs g2)
 group1 <- "Tumor"                           # g1 (interpreted as "up" in comparisons)
@@ -105,11 +105,6 @@ message("Data: ", nrow(expr_df), " genes x ", ncol(expr_df), " samples")
 # translate_data expects a numeric matrix
 expr_mat <- as.matrix(expr_df)
 mode(expr_mat) <- "numeric"
-
-message("
-[ID translation] …")
-trans_data <- translate_data(expr_mat, species)
-# Console will report: translated/untranslated/multihit IDs
 
 message("
 [Normalization] …")
@@ -209,7 +204,6 @@ if (use_pca) {
     ranked_path_vals <- path_vals
   }
 
-  # Anzahl wählbarer Features = Anzahl Zeilen
   nfeat <- nrow(ranked_path_vals)
   if (is.na(max_pca_features)) {
     k <- nfeat
@@ -217,50 +211,54 @@ if (use_pca) {
     k <- min(nfeat, max_pca_features)
   }
 
-  # Falls zu wenige Features → PCA überspringen
-  if (is.null(k) || k < 2) {
+  if (is.null(k) || k < 2 || nfeat < 2) {
     message("Zu wenige Features für PCA – Schritt übersprungen.")
   } else {
     X <- ranked_path_vals[seq_len(k), , drop = FALSE]
-    # hipathia::do_pca erwartet Features x Samples
     pca_model <- hipathia::do_pca(X)
     try( hipathia::pca_plot(pca_model, sample_group, legend = TRUE), silent = TRUE )
   }
+}
 
 # =====================
 # 11) NODE-LEVEL DE COLORS (limma) & COMPARISON PLOT
 # =====================
-message("
-[Node DE + pathway plot] …")
+message("\n[Node DE + pathway plot] …")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
 colors_de <- node_color_per_de(results, pathways, sample_group, group1, group2)
-# Example pathway plot: pick first ID from pathways_list or from the loaded set
+
 plot_id <- if (!is.null(pathways_list)) pathways_list[1] else get_pathways_list(pathways)[1]
 try({
   pathway_comparison_plot(comp, metaginfo = pathways, pathway = plot_id, node_colors = colors_de)
 }, silent = TRUE)
 
 # =====================
-# 12) CREATE REPORT & (optional) SERVE LOCALLY
+# 12) CREATE REPORT & SAVE SUMMARIES
 # =====================
-message("
-[Report] Writing HTML report into ", normalizePath(output_dir, mustWork = FALSE))
-if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+message("\n[Report] Writing HTML report into ", normalizePath(output_dir, mustWork = FALSE))
+
+pathways_summary <- get_pathways_summary(comp, pathways)
+pathways_summary$percent_significant_paths <- 100 * pathways_summary$num_significant_paths / pmax(1, pathways_summary$num_total_paths)
+pathways_summary <- pathways_summary[order(-pathways_summary$percent_significant_paths, -pathways_summary$num_significant_paths), ]
+utils::write.table(pathways_summary,
+                   file = file.path(output_dir, "pathways_summary.tsv"),
+                   sep = "\t", quote = FALSE, row.names = FALSE)
+
 report <- create_report(comp, pathways, output_dir, node_colors = colors_de)
 
 if (isTRUE(run_local_server)) {
-  visualize_report(report, port = server_port)  # open in browser: http://127.0.0.1:<port>
+  visualize_report(report, port = server_port)
 }
 
 # =====================
 # 13) QUALITY NOTES / LOG
 # =====================
-message("
-[NOTES]")
+message("\n[NOTES]")
 message("- Check translate/normalize output: counts of untranslated/multihit IDs.")
 message("- Many imputed missing genes in hipathia ⇒ interpret results with caution.")
-message("- 'up'/'down' direction refers to g1=", group1, " vs g2=", group2, ".")
+message(paste0("- 'up'/'down' direction refers to g1=", group1, " vs g2=", group2, "."))
 message("- For functional level: quantify_terms(dbannot='uniprot'/'GO').")
-message("- Applied FDR (", p_adj_method, ") threshold: q<", alpha, ".")
+message(paste0("- Applied FDR (", p_adj_method, ") threshold: q<", alpha, "."))
 
-message("
-[DONE]")
+message("\n[DONE]")
