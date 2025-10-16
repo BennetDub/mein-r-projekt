@@ -21,6 +21,9 @@ expr_file   <- "./rna_data_filtered_tumor_Hipathia.tsv"   # Genes x Samples; fir
 design_file <- "./cell_metadata_filtered_hipathia.tsv"              # Tab-delimited; columns: sample, group (and optional others) Metadata
 output_dir  <- "./hipathia_report"         # Output folder for the HTML report
 
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+
 # 0.2 Organism / Pathways
 species     <- "hsa"                        # "hsa" (Human), "mmu" (Mouse), "rno" (Rat)
 # Optional: load only certain KEGG IDs (saves time/memory). Otherwise: NULL
@@ -195,23 +198,34 @@ utils::write.table(pathways_summary, file = file.path(output_dir, "pathways_summ
 # 10) PCA (optional; visual QC)
 # =====================
 if (use_pca) {
-  message("
-[PCA] …")
-  # Rank by p-value (smallest first) so that #features <= #samples
-  if (!is.null(comp$p.value)) {
+  message("\n[PCA] …")
+
+  # Features nach p-Wert sortieren (falls vorhanden)
+  if (!is.null(comp) && "p.value" %in% colnames(comp)) {
     ranked_ids <- rownames(path_vals)[order(comp$p.value, decreasing = FALSE)]
+    ranked_ids <- ranked_ids[ranked_ids %in% rownames(path_vals)]
     ranked_path_vals <- path_vals[ranked_ids, , drop = FALSE]
   } else {
     ranked_path_vals <- path_vals
   }
-  k <- if (is.na(max_pca_features)) ncol(ranked_path_vals) else min(ncol(ranked_path_vals), max_pca_features)
-  X <- ranked_path_vals[seq_len(k), , drop = FALSE]
-  pca_model <- do_pca(X)
-  # Default plot (colors from design)
-  try({
-    pca_plot(pca_model, sample_group, legend = TRUE)
-  }, silent = TRUE)
-}
+
+  # Anzahl wählbarer Features = Anzahl Zeilen
+  nfeat <- nrow(ranked_path_vals)
+  if (is.na(max_pca_features)) {
+    k <- nfeat
+  } else {
+    k <- min(nfeat, max_pca_features)
+  }
+
+  # Falls zu wenige Features → PCA überspringen
+  if (is.null(k) || k < 2) {
+    message("Zu wenige Features für PCA – Schritt übersprungen.")
+  } else {
+    X <- ranked_path_vals[seq_len(k), , drop = FALSE]
+    # hipathia::do_pca erwartet Features x Samples
+    pca_model <- hipathia::do_pca(X)
+    try( hipathia::pca_plot(pca_model, sample_group, legend = TRUE), silent = TRUE )
+  }
 
 # =====================
 # 11) NODE-LEVEL DE COLORS (limma) & COMPARISON PLOT
