@@ -181,15 +181,6 @@ if (!"p.value" %in% colnames(comp)) {
 comp$q.value <- p.adjust(comp$p.value, method = p_adj_method)
 
 # =====================
-# 9) PATHWAY-LEVEL SUMMARY
-# =====================
-pathways_summary <- get_pathways_summary(comp, pathways)
-# Example: Top 10 by percent of significant subpaths
-pathways_summary$percent_significant_paths <- 100 * pathways_summary$num_significant_paths / pmax(1, pathways_summary$num_total_paths)
-pathways_summary <- pathways_summary[order(-pathways_summary$percent_significant_paths, -pathways_summary$num_significant_paths), ]
-utils::write.table(pathways_summary, file = file.path(output_dir, "pathways_summary.tsv"), sep = "	", quote = FALSE, row.names = FALSE)
-
-# =====================
 # 10) PCA (optional; visual QC)
 # =====================
 if (use_pca) {
@@ -204,21 +195,21 @@ if (use_pca) {
     ranked_path_vals <- path_vals
   }
 
-  nfeat <- nrow(ranked_path_vals)
-  if (is.na(max_pca_features)) {
-    k <- nfeat
-  } else {
-    k <- min(nfeat, max_pca_features)
-  }
+  nfeat  <- nrow(ranked_path_vals)
+  nsamp  <- ncol(ranked_path_vals)
+  k_cap  <- max(0, nsamp - 1)  # princomp braucht Variablen < Beobachtungen
+  k_user <- if (is.na(max_pca_features)) nfeat else min(nfeat, max_pca_features)
+  k      <- min(nfeat, k_cap, k_user)
 
-  if (is.null(k) || k < 2 || nfeat < 2) {
-    message("Zu wenige Features für PCA – Schritt übersprungen.")
+  if (k < 2) {
+    message("Zu wenige zulässige Features für PCA (k=", k, ", nsamp=", nsamp, "). Schritt übersprungen.")
   } else {
     X <- ranked_path_vals[seq_len(k), , drop = FALSE]
     pca_model <- hipathia::do_pca(X)
     try( hipathia::pca_plot(pca_model, sample_group, legend = TRUE), silent = TRUE )
   }
 }
+
 
 # =====================
 # 11) NODE-LEVEL DE COLORS (limma) & COMPARISON PLOT
