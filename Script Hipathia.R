@@ -33,7 +33,7 @@ group2 <- "Normal"                          # g2
 # 0.4 Normalization (see vignette section 3.2)
 by_quantiles         <- FALSE               # TRUE = quantile normalization first
 percentil_mode       <- FALSE               # TRUE = percentile scaling instead of linear scaling
-truncation_percentil <- NA                  # e.g., 0.95; otherwise keep NA
+truncation_percentil <- NULL                 # e.g., 0.95; otherwise keep NA
 
 # 0.5 PCA / feature selection
 use_pca             <- TRUE
@@ -110,14 +110,23 @@ trans_data <- translate_data(expr_mat, species)
 
 message("
 [Normalization] …")
-norm_args <- list(x = trans_data, by_quantiles = by_quantiles, percentil = percentil_mode)
-if (!is.na(truncation_percentil)) norm_args$truncation_percentil <- truncation_percentil
-exp_data <- hipathia::normalize_data(
-  trans_data,
-  by_quantiles = by_quantiles,
-  percentil = percentil_mode,
-  truncation_percentil = truncation_percentil
-)
+message("\n[Normalization] …")
+if (is.null(truncation_percentil)) {
+  exp_data <- hipathia::normalize_data(
+    trans_data,
+    by_quantiles = by_quantiles,
+    percentil    = percentil_mode
+  )
+} else {
+  exp_data <- hipathia::normalize_data(
+    trans_data,
+    by_quantiles = by_quantiles,
+    percentil    = percentil_mode,
+    truncation_percentil = truncation_percentil
+  )
+}
+
+
 
 # =====================
 # 4) LOAD PATHWAYS
