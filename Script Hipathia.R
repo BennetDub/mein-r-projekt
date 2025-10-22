@@ -68,6 +68,12 @@ for (pkg in needed) {
 
 
 set.seed(1)
+.log <- function(...) message(strftime(Sys.time(), "%H:%M:%S "), sprintf(...))
+
+.time_it <- function(expr, label="step") {
+  t0 <- Sys.time(); on.exit(.log("%s done in %.1f min", label, as.numeric(difftime(Sys.time(), t0, units="mins"))))
+  force(expr)
+}
 
 # =====================
 # 2) LOAD DATA (robust)
