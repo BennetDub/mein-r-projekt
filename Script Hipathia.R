@@ -53,10 +53,23 @@ server_port         <- 4000
 # =====================
 # 1) SETUP
 # =====================
-if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-for (pkg in c("hipathia","SummarizedExperiment","S4Vectors","limma")) {
-  if (!requireNamespace(pkg, quietly = TRUE)) BiocManager::install(pkg, ask = FALSE, update = FALSE)
+needed <- c("hipathia","SummarizedExperiment","S4Vectors","limma")
+
+for (pkg in needed) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    if (Sys.getenv("CONDA_PREFIX") != "") {
+      stop("Package ", pkg, " fehlt. Bitte mit Conda installieren.")
+    } else {
+      if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+      BiocManager::install(pkg, ask = FALSE, update = FALSE)
+    }
+  }
 }
+
+suppressPackageStartupMessages({
+  lapply(needed, library, character.only = TRUE)
+})
+
 
 suppressPackageStartupMessages({
   library(hipathia)
@@ -102,29 +115,25 @@ message("Data: ", nrow(expr_df), " genes x ", ncol(expr_df), " samples")
 # =====================
 # 3) ID TRANSLATION & NORMALIZATION
 # =====================
-# translate_data expects a numeric matrix
 expr_mat <- as.matrix(expr_df)
 mode(expr_mat) <- "numeric"
 
-message("
-[Normalization] …")
+# 3.1 Gene-ID-Übersetzung (Vignette 3.1)
+tr <- hipathia::translate_data(expr_mat, species = species)
+
+# Versionstolerant: Slot-Namen können variieren
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+trans_data <- tr$exp %||% tr$matrix %||% tr$translated
+if (is.null(trans_data)) stop("translate_data() lieferte kein exp/matrix/translated – hipathia-Version prüfen.")
+
+# 3.2 Skalierung/Normalisierung (Vignette 3.2)
 message("\n[Normalization] …")
-if (is.null(truncation_percentil)) {
-  exp_data <- hipathia::normalize_data(
-    trans_data,
-    by_quantiles = by_quantiles,
-    percentil    = percentil_mode
-  )
-} else {
-  exp_data <- hipathia::normalize_data(
-    trans_data,
-    by_quantiles = by_quantiles,
-    percentil    = percentil_mode,
-    truncation_percentil = truncation_percentil
-  )
-}
-
-
+exp_data <- hipathia::normalize_data(
+  trans_data,
+  by_quantiles = by_quantiles,
+  percentil    = percentil_mode,
+  truncation_percentil = truncation_percentil
+)
 
 # =====================
 # 4) LOAD PATHWAYS
