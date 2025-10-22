@@ -66,49 +66,52 @@ for (pkg in needed) {
   }
 }
 
-suppressPackageStartupMessages({
-  lapply(needed, library, character.only = TRUE)
-})
-
-
-suppressPackageStartupMessages({
-  library(hipathia)
-  library(SummarizedExperiment)
-  library(S4Vectors)
-  library(limma)
-})
 
 set.seed(1)
 
 # =====================
-# 2) LOAD DATA
+# 2) LOAD DATA (robust)
 # =====================
-# Reads TSV/CSV; adapt if needed.
 read_table_guess <- function(path) {
+  stopifnot(file.exists(path))
   ext <- tolower(tools::file_ext(path))
   if (ext %in% c("tsv","txt")) {
-    df <- utils::read.table(path, sep = "	", header = TRUE, quote = "\"", check.names = FALSE, comment.char = "")
+    utils::read.table(path, sep = "\t", header = TRUE, quote = "\"",
+                      check.names = FALSE, comment.char = "", stringsAsFactors = FALSE)
   } else {
-    df <- utils::read.csv(path, header = TRUE, check.names = FALSE)
+    utils::read.csv(path, header = TRUE, check.names = FALSE, stringsAsFactors = FALSE)
   }
-  df
 }
 
 expr_df   <- read_table_guess(expr_file)
 design_df <- read_table_guess(design_file)
 
 stopifnot("sample" %in% colnames(design_df), "group" %in% colnames(design_df))
+stopifnot(ncol(expr_df) >= 2)   # 1x IDs + >=1 Sample
 
-# Use first column of expression table as rownames (gene IDs)
-if (!any(duplicated(expr_df[[1]]))) rownames(expr_df) <- expr_df[[1]]
-if (colnames(expr_df)[1] %in% c("gene","Gene","GENE","id","ID")) expr_df[[1]] <- NULL else expr_df[[1]] <- NULL
+# 1) IDs exakt einmal setzen
+gene_ids <- as.character(expr_df[[1]])
+stopifnot(!anyNA(gene_ids))
+rownames(expr_df) <- gene_ids
+expr_df[[1]] <- NULL
 
-# Ensure design samples match expression columns
-samples <- intersect(colnames(expr_df), design_df$sample)
-if (length(samples) == 0) stop("No overlap between expression matrix columns and design$sample.")
+# 2) Samples abgleichen
+samples <- intersect(colnames(expr_df), as.character(design_df$sample))
+if (length(samples) == 0) stop("Kein Overlap zwischen Expression-Spalten und design$sample.")
+if (length(samples) < ncol(expr_df)) {
+  warning("Ignoriere ", ncol(expr_df)-length(samples), " Expression-Spalten ohne Design-Eintrag.")
+}
 expr_df   <- expr_df[, samples, drop = FALSE]
 design_df <- design_df[match(samples, design_df$sample), , drop = FALSE]
 stopifnot(all(design_df$sample == colnames(expr_df)))
+
+# 3) Numerik hart erzwingen
+expr_mat_num <- suppressWarnings(as.matrix(apply(expr_df, 2, as.numeric)))
+if (anyNA(expr_mat_num)) {
+  nbad <- sum(is.na(expr_mat_num))
+  stop("Nicht-numerische Einträge in Expressionsmatrix (", nbad, " NAs nach coercion). Datei prüfen.")
+}
+expr_df <- as.data.frame(expr_mat_num, check.names = FALSE)
 
 message("Data: ", nrow(expr_df), " genes x ", ncol(expr_df), " samples")
 
@@ -188,6 +191,22 @@ if (!"p.value" %in% colnames(comp)) {
   colnames(comp)[colnames(comp) == pcol] <- "p.value"
 }
 comp$q.value <- p.adjust(comp$p.value, method = p_adj_method)
+# Ergebnisse persistieren (optional, aber sinnvoll)
+utils::write.table(comp,
+  file = file.path(output_dir, "subpath_differential.tsv"),
+  sep = "\t", quote = FALSE, row.names = TRUE
+)
+
+sig <- comp[comp$q.value <= alpha, , drop = FALSE]
+if (nrow(sig) == 0) {
+  warning("Keine signifikanten Subpaths bei q<=", alpha)
+} else {
+  utils::write.table(sig,
+    file = file.path(output_dir, "subpath_significant.tsv"),
+    sep = "\t", quote = FALSE, row.names = TRUE
+  )
+}
+
 
 # =====================
 # 10) PCA (optional; visual QC)
