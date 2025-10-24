@@ -111,6 +111,13 @@ expr_df   <- expr_df[, samples, drop = FALSE]
 design_df <- design_df[match(samples, design_df$sample), , drop = FALSE]
 stopifnot(all(design_df$sample == colnames(expr_df)))
 
+# --- A: Diagnose nach dem Laden ---
+cat("Expr-Dims: ", nrow(expr_df), " Gene x ", ncol(expr_df), " Samples\n", sep = "")
+cat("Erste 5 Gene: ", paste(head(rownames(expr_df), 5), collapse=", "), "\n", sep = "")
+cat("Vermutete ID-Form (Symbol!=nur Ziffern): ",
+    any(!grepl("^\\d+$", rownames(expr_df))), "\n", sep = "")
+
+
 # 3) Numerik hart erzwingen
 expr_mat_num <- suppressWarnings(as.matrix(apply(expr_df, 2, as.numeric)))
 if (anyNA(expr_mat_num)) {
@@ -121,40 +128,131 @@ expr_df <- as.data.frame(expr_mat_num, check.names = FALSE)
 
 message("Data: ", nrow(expr_df), " genes x ", ncol(expr_df), " samples")
 
+# ==== 3) ID TRANSLATION & NORMALIZATION (robust) 
+
+
+# 3) ROBUSTES ID-MAPPING & NORMALISIERUNG
 # =====================
-# 3) ID TRANSLATION & NORMALIZATION
-# =====================
-expr_mat <- as.matrix(expr_df)
-mode(expr_mat) <- "numeric"
 
-# 3.1 Gene-ID-Übersetzung (Vignette 3.1)
-tr <- hipathia::translate_data(expr_mat, species = species)
+species <- "hsa"  # Human
 
-# Versionstolerant: Slot-Namen können variieren
-`%||%` <- function(a, b) if (!is.null(a)) a else b
-trans_data <- tr$exp %||% tr$matrix %||% tr$translated
-if (is.null(trans_data)) stop("translate_data() lieferte kein exp/matrix/translated – hipathia-Version prüfen.")
+# 3.0: Gene-IDs evtl. von Anführungszeichen säubern
+rownames(expr_df) <- gsub("^['\"]+|['\"]+$", "", rownames(expr_df))
 
-# 3.2 Skalierung/Normalisierung (Vignette 3.2)
-message("\n[Normalization] …")
+# Numerik erzwingen
+expr_mat0 <- as.matrix(expr_df)
+storage.mode(expr_mat0) <- "double"
+
+# Helper
+`%||%` <- function(a,b) if (!is.null(a)) a else b
+grab_mat <- function(tr) {
+  if (is.matrix(tr)) return(tr)
+  if (is.list(tr))   return(tr$exp %||% tr$matrix %||% tr$translated)
+  if (inherits(tr,"SummarizedExperiment")) return(SummarizedExperiment::assay(tr,1))
+  NULL
+}
+
+# 3.1: ID-Typen bestimmen
+ids <- rownames(expr_mat0)
+looks_numeric <- all(grepl("^[0-9]+$", head(ids, 100), perl = TRUE)) || mean(grepl("^[0-9]+$", ids)) > 0.5
+
+# org.Hs.eg.db bereit?
+if (!requireNamespace("AnnotationDbi", quietly = TRUE) ||
+    !requireNamespace("org.Hs.eg.db", quietly = TRUE)) {
+  stop("R-Pakete für Mapping fehlen.\nInstalliere im Terminal:\n",
+       "  conda install -n hipathia-r -c bioconda -c conda-forge ",
+       "bioconductor-org.hs.eg.db r-annotationdbi")
+}
+suppressPackageStartupMessages({ library(AnnotationDbi); library(org.Hs.eg.db) })
+
+# Entrez-Universum und grober Entrez-Check
+entrez_universe <- AnnotationDbi::keys(org.Hs.eg.db, keytype = "ENTREZID")
+overlap_frac <- mean(ids %in% entrez_universe, na.rm = TRUE)
+is_entrez <- looks_numeric && overlap_frac >= 0.5  # konservativ
+
+message(sprintf("ID-Check: looks_numeric=%s, overlap_with_org.Hs.eg.db=%.3f -> is_entrez=%s",
+                looks_numeric, overlap_frac, is_entrez))
+
+# 3.2: Robustes Mapping auf Entrez
+if (!is_entrez) {
+  is_ens    <- grepl("^ENSG\\d+", ids, ignore.case = TRUE)
+  is_entrez <- grepl("^[0-9]+$", ids)
+  is_symbol <- !(is_ens | is_entrez)
+
+  mapped <- rep(NA_character_, length(ids))
+
+  # SYMBOL -> Entrez
+  if (any(is_symbol)) {
+    sym_keys <- unique(ids[is_symbol])
+    sym2ent  <- AnnotationDbi::mapIds(org.Hs.eg.db,
+                                      keys = sym_keys,
+                                      keytype = "SYMBOL",
+                                      column = "ENTREZID",
+                                      multiVals = "first")
+    mapped[is_symbol] <- sym2ent[ ids[is_symbol] ]
+    message(sprintf("SYMBOL->Entrez: %d/%d zugeordnet",
+                    sum(!is.na(mapped[is_symbol])), sum(is_symbol)))
+  }
+
+  # ENSEMBL -> Entrez
+  if (any(is_ens)) {
+    ens_keys <- unique(ids[is_ens])
+    ens2ent  <- AnnotationDbi::mapIds(org.Hs.eg.db,
+                                      keys = ens_keys,
+                                      keytype = "ENSEMBL",
+                                      column = "ENTREZID",
+                                      multiVals = "first")
+    mapped[is_ens] <- ens2ent[ ids[is_ens] ]
+    message(sprintf("ENSEMBL->Entrez: %d/%d zugeordnet",
+                    sum(!is.na(mapped[is_ens])), sum(is_ens)))
+  }
+
+  # bereits Entrez
+  mapped[is_entrez] <- ids[is_entrez]
+
+  keep <- !is.na(mapped)
+  if (sum(keep) == 0) stop("Kein einziges Gen konnte auf Entrez gemappt werden.")
+
+  expr_mapped <- expr_mat0[keep, , drop = FALSE]
+  rownames(expr_mapped) <- mapped[keep]
+
+  # Duplikate (gleiche Entrez) entfernen – erster Eintrag gewinnt
+  dup <- duplicated(rownames(expr_mapped))
+  if (any(dup)) {
+    expr_mapped <- expr_mapped[!dup, , drop = FALSE]
+    message(sprintf("Duplikate entfernt: %d", sum(dup)))
+  }
+
+  message(sprintf("Nach Mapping: %d Gene (von %d)", nrow(expr_mapped), nrow(expr_mat0)))
+} else {
+  expr_mapped <- expr_mat0
+  message("IDs sind valide Entrez-IDs – kein Mapping nötig.")
+}
+
+# 3.3: translate_data (hipathia) + Normalisierung
+tr <- hipathia::translate_data(expr_mapped, species = species)
+trans_data <- grab_mat(tr)
+if (is.null(trans_data) || nrow(trans_data) == 0) {
+  stop("translate_data() lieferte 0 Zeilen – passen Organismus/IDs?")
+}
+message(sprintf("Hipathia-übersetzte Gene: %d", nrow(trans_data)))
+
 exp_data <- hipathia::normalize_data(
   trans_data,
-  by_quantiles = by_quantiles,
-  percentil    = percentil_mode,
+  by_quantiles         = by_quantiles,
+  percentil            = percentil_mode,
   truncation_percentil = truncation_percentil
 )
+message(sprintf("exp_data: %d x %d", nrow(exp_data), ncol(exp_data)))
 
-# =====================
 # 4) LOAD PATHWAYS
-# =====================
-message("
-[Load pathways] …")
+message("\n[Load pathways] …")
 if (is.null(pathways_list)) {
-  pathways <- load_pathways(species = species)
+  pathways <- hipathia::load_pathways(species = species)
 } else {
-  pathways <- load_pathways(species = species, pathways_list = pathways_list)
+  pathways <- hipathia::load_pathways(species = species, pathways_list = pathways_list)
 }
-message("Loaded pathways: ", length(get_pathways_list(pathways)))
+message("Loaded pathways: ", length(hipathia::get_pathways_list(pathways)))
 
 # =====================
 # 5) BUILD SUMMARIZEDEXPERIMENT (optional)
@@ -169,13 +267,13 @@ se <- SummarizedExperiment::SummarizedExperiment(assays = S4Vectors::SimpleList(
 message("
 [Hipathia] Computing activations (effector subpaths) …")
 # decompose = FALSE for overview; TRUE only for targeted deep dives (many more features)
-results <- hipathia(exp_data, pathways, decompose = FALSE)
+results <- hipathia::hipathia(exp_data, pathways, decompose = FALSE)
 print(results)
 
 # =====================
 # 7) EXTRACT FEATURES (SUBPATHS / FUNCTIONS)
 # =====================
-path_vals <- get_paths_data(results, matrix = TRUE)  # Matrix: subpaths x samples
+path_vals <- hipathia::get_paths_data(results, matrix = TRUE)  # Matrix: subpaths x samples
 # Optional function level (Uniprot/GO)
 # uniprot_se <- quantify_terms(results, pathways, dbannot = "uniprot")
 # go_se      <- quantify_terms(results, pathways, dbannot = "GO")
@@ -189,7 +287,7 @@ sample_group <- col_data$group
 names(sample_group) <- rownames(col_data)
 stopifnot(all(names(sample_group) == colnames(path_vals)))
 
-comp <- do_wilcoxon(path_vals, sample_group, g1 = group1, g2 = group2)
+comp <- hipathia::do_wilcoxon(path_vals, sample_group, g1 = group1, g2 = group2)
 # FDR correction
 if (!"p.value" %in% colnames(comp)) {
   # Some hipathia versions name the p-value column differently
@@ -251,11 +349,11 @@ if (use_pca) {
 message("\n[Node DE + pathway plot] …")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
-colors_de <- node_color_per_de(results, pathways, sample_group, group1, group2)
+colors_de <- hipathia::node_color_per_de(results, pathways, sample_group, group1, group2)
 
-plot_id <- if (!is.null(pathways_list)) pathways_list[1] else get_pathways_list(pathways)[1]
+plot_id <- if (!is.null(pathways_list)) pathways_list[1] else hipathia::get_pathways_list(pathways)[1]
 try({
-  pathway_comparison_plot(comp, metaginfo = pathways, pathway = plot_id, node_colors = colors_de)
+  hipathia::pathway_comparison_plot(comp, metaginfo = pathways, pathway = plot_id, node_colors = colors_de)
 }, silent = TRUE)
 
 # =====================
@@ -263,17 +361,17 @@ try({
 # =====================
 message("\n[Report] Writing HTML report into ", normalizePath(output_dir, mustWork = FALSE))
 
-pathways_summary <- get_pathways_summary(comp, pathways)
+pathways_summary <- hipathia::get_pathways_summary(comp, pathways)
 pathways_summary$percent_significant_paths <- 100 * pathways_summary$num_significant_paths / pmax(1, pathways_summary$num_total_paths)
 pathways_summary <- pathways_summary[order(-pathways_summary$percent_significant_paths, -pathways_summary$num_significant_paths), ]
 utils::write.table(pathways_summary,
                    file = file.path(output_dir, "pathways_summary.tsv"),
                    sep = "\t", quote = FALSE, row.names = FALSE)
 
-report <- create_report(comp, pathways, output_dir, node_colors = colors_de)
+report <- hipathia::create_report(comp, pathways, output_dir, node_colors = colors_de)
 
 if (isTRUE(run_local_server)) {
-  visualize_report(report, port = server_port)
+  hipathia::visualize_report(report, port = server_port)
 }
 
 # =====================
