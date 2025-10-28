@@ -27,7 +27,8 @@ if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 # 0.2 Organism / Pathways
 species     <- "hsa"                        # "hsa" (Human), "mmu" (Mouse), "rno" (Rat)
 # Optional: load only certain KEGG IDs (saves time/memory). Otherwise: NULL
-pathways_list <- NULL                    # e.g., c("hsa03320","hsa04014") or NULL for all
+pathways_list <- NULL
+            # e.g., c("hsa03320","hsa04014") or NULL for all
 
 # 0.3 Groups (order defines direction: g1 vs g2)
 group1 <- "Tumor"                           # g1 (interpreted as "up" in comparisons)
@@ -57,14 +58,10 @@ needed <- c("hipathia","SummarizedExperiment","S4Vectors","limma")
 
 for (pkg in needed) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
-    if (Sys.getenv("CONDA_PREFIX") != "") {
-      stop("Package ", pkg, " fehlt. Bitte mit Conda installieren.")
-    } else {
-      if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-      BiocManager::install(pkg, ask = FALSE, update = FALSE)
-    }
+    stop("Fehlendes Paket: ", pkg, ". Bitte im Environment installieren (Conda/BiocManager).")
   }
 }
+
 
 
 set.seed(1)
@@ -228,6 +225,18 @@ if (!is_entrez) {
   expr_mapped <- expr_mat0
   message("IDs sind valide Entrez-IDs – kein Mapping nötig.")
 }
+# --- ID-Diagnose ---
+sym_like   <- mean(grepl("^[A-Za-z]", rownames(expr_mat0))) > 0.3
+ens_like   <- mean(grepl("^ENSG", rownames(expr_mat0))) > 0.3
+entrez_like<- mean(grepl("^[0-9]+$", rownames(expr_mat0))) > 0.3
+message(sprintf("ID-Heuristik ~ SYMBOL:%s ENSEMBL:%s ENTREZ:%s", sym_like, ens_like, entrez_like))
+
+tic <- function() assign(".tic", Sys.time(), .GlobalEnv)
+toc <- function(lbl="step") {
+  t <- get(".tic", envir=.GlobalEnv); d <- difftime(Sys.time(), t, units="mins")
+  message(sprintf("[%s] %.2f min", lbl, as.numeric(d)))
+}
+
 
 # 3.3: translate_data (hipathia) + Normalisierung
 tr <- hipathia::translate_data(expr_mapped, species = species)
@@ -261,6 +270,14 @@ message("Loaded pathways: ", length(hipathia::get_pathways_list(pathways)))
 col_data <- S4Vectors::DataFrame(design_df[, setdiff(colnames(design_df), "sample"), drop = FALSE], row.names = design_df$sample)
 se <- SummarizedExperiment::SummarizedExperiment(assays = S4Vectors::SimpleList(raw = exp_data), colData = col_data)
 
+# --- Gruppen-Check ---
+stopifnot("group" %in% colnames(col_data))
+grp_levels <- unique(as.character(col_data$group))
+if (!all(c(group1, group2) %in% grp_levels)) {
+  stop(sprintf("Gruppen passen nicht: group1/group2 = %s/%s, vorhandene: %s",
+               group1, group2, paste(grp_levels, collapse=", ")))
+}
+
 # =====================
 # 6) RUN HIPATHIA
 # =====================
@@ -274,9 +291,43 @@ print(results)
 # 7) EXTRACT FEATURES (SUBPATHS / FUNCTIONS)
 # =====================
 path_vals <- hipathia::get_paths_data(results, matrix = TRUE)  # Matrix: subpaths x samples
-# Optional function level (Uniprot/GO)
-# uniprot_se <- quantify_terms(results, pathways, dbannot = "uniprot")
-# go_se      <- quantify_terms(results, pathways, dbannot = "GO")
+# --- Aufräumen: NAs raus/imputieren, konstante Subpaths erkennen ---
+# 2.1 Zeilen, die komplett NA sind, entfernen
+keep_any <- rowSums(is.finite(path_vals)) > 1
+if (sum(keep_any) == 0) {
+  stop("Alle Subpaths sind komplett NA. Lade mehr Pfade (pathways_list <- NULL) oder prüfe Mapping/normalize_data.")
+}
+path_vals <- path_vals[keep_any, , drop = FALSE]
+
+# 2.2 NA zeilenweise mit Zeilenmittelwert imputieren (falls ganze Zeile NA war, wäre sie oben schon raus)
+row_means <- rowMeans(path_vals, na.rm = TRUE)
+# ersetze NA-Zellen durch den jeweiligen Zeilenmittelwert
+na_idx <- which(is.na(path_vals), arr.ind = TRUE)
+if (length(na_idx) > 0) {
+  path_vals[na_idx] <- row_means[na_idx[,1]]
+}
+
+# 2.3 Konstantheit prüfen
+vars <- apply(path_vals, 1, var)
+nzv  <- vars > 0 & is.finite(vars)
+if (sum(nzv) < 2) {
+  warning("Zu wenig variable Subpaths für PCA nach NA-Handling. Ich überspringe PCA.")
+} else {
+  path_vals <- path_vals[nzv, , drop = FALSE]
+}
+# --- Diagnose-Log nach Cleanup ---
+message(sprintf("Subpaths nach Cleanup: %d (von vorher %d)", nrow(path_vals), length(vars)))
+message(sprintf("NA-Zellen nach Imputation: %d", sum(is.na(path_vals))))
+
+# --- Option: schwach variable Subpaths filtern (QoL) ---
+# Deaktiviert per default; aktiviere bei Bedarf.
+filter_low_var <- FALSE
+if (isTRUE(filter_low_var)) {
+  v <- apply(path_vals, 1, stats::var)
+  keep <- v > stats::quantile(v, 0.2, na.rm = TRUE)  # oberste 80% Varianz behalten
+  path_vals <- path_vals[keep, , drop = FALSE]
+  message(sprintf("Varianzfilter aktiv: %d/%d Subpaths behalten", sum(keep), length(v)))
+}
 
 # =====================
 # 8) STATS: WILCOXON g1 VS g2
@@ -286,6 +337,17 @@ message("
 sample_group <- col_data$group
 names(sample_group) <- rownames(col_data)
 stopifnot(all(names(sample_group) == colnames(path_vals)))
+
+tic <- function() assign(".tic", Sys.time(), .GlobalEnv)
+toc <- function(lbl="step") {
+  t <- get(".tic", envir=.GlobalEnv); d <- difftime(Sys.time(), t, units="mins")
+  message(sprintf("[%s] %.2f min", lbl, as.numeric(d)))
+}
+
+tic(); tr <- hipathia::translate_data(expr_mapped, species = species); toc("translate_data")
+tic(); results <- hipathia::hipathia(exp_data, pathways, decompose = FALSE); toc("hipathia")
+tic(); comp <- hipathia::do_wilcoxon(path_vals, sample_group, g1 = group1, g2 = group2); toc("wilcoxon")
+
 
 comp <- hipathia::do_wilcoxon(path_vals, sample_group, g1 = group1, g2 = group2)
 # FDR correction
@@ -311,37 +373,57 @@ if (nrow(sig) == 0) {
   )
 }
 
+# --- Komfort: Top-Tabellen exportieren ---
+ord_p  <- order(comp$p.value, decreasing = FALSE)
+ord_q  <- order(comp$q.value, decreasing = FALSE)
+utils::write.table(comp[head(ord_p, 50), ],
+  file = file.path(output_dir, "subpath_top50_by_p.tsv"),
+  sep = "\t", quote = FALSE, row.names = TRUE
+)
+utils::write.table(comp[head(ord_q, 50), ],
+  file = file.path(output_dir, "subpath_top50_by_q.tsv"),
+  sep = "\t", quote = FALSE, row.names = TRUE
+)
+message("Top-5 p: ", paste(signif(comp$p.value[head(ord_p,5)], 3), collapse=", "))
+message("Top-5 q: ", paste(signif(comp$q.value[head(ord_q,5)], 3), collapse=", "))
 
 # =====================
-# 10) PCA (optional; visual QC)
+# PCA (robust via prcomp)
 # =====================
 if (use_pca) {
-  message("\n[PCA] …")
+  message("\n[PCA] (robust via prcomp) …")
 
-  # Features nach p-Wert sortieren (falls vorhanden)
-  if (!is.null(comp) && "p.value" %in% colnames(comp)) {
-    ranked_ids <- rownames(path_vals)[order(comp$p.value, decreasing = FALSE)]
-    ranked_ids <- ranked_ids[ranked_ids %in% rownames(path_vals)]
-    ranked_path_vals <- path_vals[ranked_ids, , drop = FALSE]
+  if (nrow(path_vals) < 2 || ncol(path_vals) < 2) {
+    warning("Zu wenige Dimensionen für PCA (", nrow(path_vals), "x", ncol(path_vals), "). Überspringe PCA.")
   } else {
-    ranked_path_vals <- path_vals
-  }
+    # optional: auf Top-Varianz featuren beschränken
+    vars <- apply(path_vals, 1, var)
+    k_total <- length(vars)
+    k_user  <- if (is.na(max_pca_features)) k_total else min(k_total, max_pca_features)
+    top_ids <- names(sort(vars, decreasing = TRUE))[seq_len(k_user)]
+    X <- path_vals[top_ids, , drop = FALSE]               # Subpaths x Samples
 
-  nfeat  <- nrow(ranked_path_vals)
-  nsamp  <- ncol(ranked_path_vals)
-  k_cap  <- max(0, nsamp - 1)  # princomp braucht Variablen < Beobachtungen
-  k_user <- if (is.na(max_pca_features)) nfeat else min(nfeat, max_pca_features)
-  k      <- min(nfeat, k_cap, k_user)
+    # Gruppen-Vektor passend zu den Spalten
+    sample_group <- col_data$group
+    names(sample_group) <- rownames(col_data)
+    grp <- factor(sample_group[colnames(X)], levels = c(group1, group2))
 
-  if (k < 2) {
-    message("Zu wenige zulässige Features für PCA (k=", k, ", nsamp=", nsamp, "). Schritt übersprungen.")
-  } else {
-    X <- ranked_path_vals[seq_len(k), , drop = FALSE]
-    pca_model <- hipathia::do_pca(X)
-    try( hipathia::pca_plot(pca_model, sample_group, legend = TRUE), silent = TRUE )
+    # PCA auf z-skalierten Daten; t(X) = Samples x Features
+    pca_res <- prcomp(t(X), center = TRUE, scale. = TRUE)
+    imp <- summary(pca_res)$importance[2, 1:2] * 100
+
+    pdf(file.path(output_dir, "pca_prcomp.pdf"))
+    cols <- as.integer(grp)
+    plot(pca_res$x[,1], pca_res$x[,2],
+         col = cols, pch = 19,
+         xlab = sprintf("PC1 (%.1f%%)", imp[1]),
+         ylab = sprintf("PC2 (%.1f%%)", imp[2]),
+         main = sprintf("PCA on Hipathia subpaths (n=%d, k=%d)", ncol(X), nrow(X)))
+    legend("topright", legend = levels(grp), col = seq_along(levels(grp)), pch = 19)
+    dev.off()
+    message("PCA gespeichert: ", file.path(output_dir, "pca_prcomp.pdf"))
   }
 }
-
 
 # =====================
 # 11) NDE-LEVEL DE COLORS (limma) & COMPARISON PLOT
@@ -368,7 +450,28 @@ utils::write.table(pathways_summary,
                    file = file.path(output_dir, "pathways_summary.tsv"),
                    sep = "\t", quote = FALSE, row.names = FALSE)
 
-report <- hipathia::create_report(comp, pathways, output_dir, node_colors = colors_de)
+# ---- Kompatibilität für create_report() (alte Hipathia-Erwartungen) ----
+# 1) FDR-Spalte so benennen, wie der Report sie erwartet
+if (!"FDRp.value" %in% colnames(comp)) {
+  comp$FDRp.value <- if ("q.value" %in% colnames(comp)) comp$q.value else p.adjust(comp$p.value, method = p_adj_method)
+}
+
+# 2) Richtung bestimmen (g1 - g2) und "status" setzen
+g1_means <- rowMeans(path_vals[, sample_group == group1, drop = FALSE], na.rm = TRUE)
+g2_means <- rowMeans(path_vals[, sample_group == group2, drop = FALSE], na.rm = TRUE)
+
+# auf comp-Rownames ausrichten
+comp$mean_g1 <- g1_means[rownames(comp)]
+comp$mean_g2 <- g2_means[rownames(comp)]
+comp$effect  <- comp$mean_g1 - comp$mean_g2
+comp$status  <- ifelse(comp$effect > 0, "UP", "DOWN")
+
+# 3) (optional) NAs in FDR vermeiden
+comp$FDRp.value[!is.finite(comp$FDRp.value)] <- 1
+
+
+report <- hipathia::create_report(comp, pathways, output_dir,
+                                  node_colors = colors_de, conf = alpha)
 
 if (isTRUE(run_local_server)) {
   hipathia::visualize_report(report, port = server_port)
@@ -383,5 +486,22 @@ message("- Many imputed missing genes in hipathia ⇒ interpret results with cau
 message(paste0("- 'up'/'down' direction refers to g1=", group1, " vs g2=", group2, "."))
 message("- For functional level: quantify_terms(dbannot='uniprot'/'GO').")
 message(paste0("- Applied FDR (", p_adj_method, ") threshold: q<", alpha, "."))
+
+# --- Session Info & Repro-Log ---
+writeLines(c(
+  sprintf("Date: %s", Sys.time()),
+  sprintf("Working dir: %s", getwd()),
+  sprintf("R version: %s", R.version.string)
+), con = file.path(output_dir, "run_info.txt"))
+sink(file.path(output_dir, "sessionInfo.txt"))
+print(sessionInfo())
+sink()
+saveRDS(list(
+  results = results,
+  comp    = comp,
+  path_vals = path_vals,
+  pathways = pathways,
+  col_data = col_data
+), file = file.path(output_dir, "objects_for_repro.rds"))
 
 message("\n[DONE]")
